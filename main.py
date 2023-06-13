@@ -2,7 +2,7 @@ import telebot
 import config
 
 
-bot = telebot.TeleBot('6033109078:AAEm9HFaZT8UrMCQcdcE5BI5Kt56NNCkwR0')
+bot = telebot.TeleBot('6033109078:AAEm9HFaZT8UhMCQcdcE5BI5Kt56NNCkwR0')
 
 @bot.message_handler(commands=["start"])
 def start(m, res=False):
