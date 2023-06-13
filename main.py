@@ -11,17 +11,17 @@ bot = telebot.TeleBot('6033109078:AAEm9HFaZT8UhMCQcdcE5BI5Kt56NNCkwR0')
 
 @bot.message_handler(commands=["start"])
 def start(m, res=False):
-    bot.send_message(m.chat.id, 'Я на связи. Веди название валюты - USD или EUR )')
+    bot.send_message(m.chat.id, 'Я на связи. Веди название валюты - Usd или Eur )')
 
 
 # Получение сообщений от юзера
 @bot.message_handler(content_types=["text"])
 def handle_text(message):
-    if message.text not in ["USD", "EUR"]:
-        bot.send_message(message.chat.id, 'Некорректный ввод: напишите "USD", "EUR"')
+    if message.text not in ["Usd", "Eur"]:
+        bot.send_message(message.chat.id, 'Некорректный ввод: напишите "Usd", "Eur"')
 
 
-    elif message.text == "USD":
+    elif message.text == "Usd":
         url = f"https://api.apilayer.com/exchangerates_data/latest?base={message.text}"
         response = requests.get(url, headers={'apikey': API_KEY})
         #Загоняем из json, иначе не понимает
@@ -31,7 +31,7 @@ def handle_text(message):
         bot.send_message(message.chat.id, f'Курс USD к рублю: {rate}')
         #Задержка от особо умных
         time.sleep(30)
-    elif message.text == "EUR":
+    elif message.text == "Eur":
         url = f"https://api.apilayer.com/exchangerates_data/latest?base={message.text}"
         response = requests.get(url, headers={'apikey': API_KEY})
         data = response.json()
