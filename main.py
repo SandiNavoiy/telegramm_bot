@@ -19,7 +19,7 @@ def start(m, res=False):
 def handle_text(message):
     if message.text not in ["USD", "EUR"]:
         bot.send_message(message.chat.id, 'Некорректный ввод: напишите "USD", "EUR"')
-        time.sleep(30)
+
 
     elif message.text == "USD":
         url = f"https://api.apilayer.com/exchangerates_data/latest?base={message.text}"
