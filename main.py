@@ -1,11 +1,16 @@
+import os
 import time
 import requests
 import telebot
+from dotenv import load_dotenv
 
+load_dotenv()
+
+TOKEN = os.getenv("API_KEY")
 #API KEY сервиса
-API_KEY = 'nhWcDR9FQnh1fkniA6dKLhCsBC41ZHoh'
+API_KEY = TOKEN
 #API KEY стелеграм бота и обьявляем сам бот
-bot = telebot.TeleBot('6033109078:AAEm9HFaZT8UhMCQcdcE5BI5Kt56NNCkwR0')
+bot = telebot.TeleBot(API_KEY)
 
 #Стартовое сообщение
 
