@@ -6,11 +6,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TOKEN = os.getenv("API_KEY")
+TOKEN = os.getenv("TOKEN")
 #API KEY сервиса
-API_KEY = TOKEN
+API_KEY = os.getenv("API_KEY")
 #API KEY стелеграм бота и обьявляем сам бот
-bot = telebot.TeleBot(API_KEY)
+bot = telebot.TeleBot(TOKEN)
 
 #Стартовое сообщение
 
