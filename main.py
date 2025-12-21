@@ -3,7 +3,7 @@ import time
 import requests
 import telebot
 from dotenv import load_dotenv
-
+"ьрппропрол"
 load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
