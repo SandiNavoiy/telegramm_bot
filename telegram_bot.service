@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Currency Exchange Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/telegramm_bot
+ExecStart=/opt/telegramm_bot/venv/bin/python main.py
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/telegramm_bot/.env
+
+[Install]
+WantedBy=multi-user.target

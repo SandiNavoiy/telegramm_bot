@@ -1,64 +1,185 @@
+import logging
+import sys
 import os
-import time
-import requests
 import telebot
-from dotenv import load_dotenv
+from telebot import types
 
-load_dotenv()
+from config import Config
+from database import db
+from rates_service import rates_service
+from scheduler import bot_scheduler
 
-TOKEN = os.getenv("TOKEN")
-#API KEY сервиса
-API_KEY = os.getenv("API_KEY")
-#API KEY стелеграм бота и обьявляем сам бот
-bot = telebot.TeleBot(TOKEN)
+# Настройка логирования (вывод в файл bot.log и в консоль)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger("TelegramBot")
 
-#Стартовое сообщение
+# Проверка конфигурации и инициализация бота Telegram
+Config.validate()
+bot = telebot.TeleBot(Config.BOT_TOKEN)
 
-@bot.message_handler(commands=["start"])
-def start(m, res=False):
-    bot.send_message(m.chat.id, 'Я на связи. Введи название валюты - Usd, Eur, Cad, Gbp )')
+def get_main_keyboard():
+    """Создание интерактивной клавиатуры Telegram с кнопками валют."""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    btn_usd = types.KeyboardButton("💵 USD")
+    btn_eur = types.KeyboardButton("💶 EUR")
+    btn_cad = types.KeyboardButton("🇨🇦 CAD")
+    btn_gbp = types.KeyboardButton("💷 GBP")
+    btn_kas = types.KeyboardButton("⚡ KAS")
+    btn_xmr = types.KeyboardButton("🔒 XMR")
+    btn_all = types.KeyboardButton("📊 Все курсы")
+    btn_status = types.KeyboardButton("ℹ️ Статус")
+    
+    markup.add(btn_usd, btn_eur, btn_cad)
+    markup.add(btn_gbp, btn_kas, btn_xmr)
+    markup.add(btn_all, btn_status)
+    return markup
 
+@bot.message_handler(commands=["start", "help"])
+def send_welcome(message):
+    """Обработчик команд /start и /help."""
+    # Регистрируем пользователя как подписчика
+    db.add_subscriber(message.chat.id, message.from_user.username)
+    
+    welcome_text = (
+        f"👋 <b>Привет, {message.from_user.first_name or 'пользователь'}!</b>\n\n"
+        f"Я бот отслеживания курсов валют.\n\n"
+        f"<b>Что я умею:</b>\n"
+        f"• Выдавать текущие курсы валют по запросу (USD, EUR, CAD, GBP, Kaspa, Monero).\n"
+        f"• Ежедневно в <b>09:00 по Москве</b> автоматически отправлять утренний сводный курс.\n"
+        f"• Запоминать утренний курс и каждый час проверять отклонения.\n"
+        f"• При отклонении курса более чем на <b>10%</b> от утреннего — мгновенно отправлять предупреждение.\n\n"
+        f"Вы автоматически подписаны на рассылку отчетов и уведомлений. Для отписки используйте /unsubscribe."
+    )
+    bot.send_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-# Получение сообщений от юзера
+@bot.message_handler(commands=["subscribe"])
+def subscribe_cmd(message):
+    """Команда подписки на утренние отчеты и уведомления."""
+    db.add_subscriber(message.chat.id, message.from_user.username)
+    bot.send_message(message.chat.id, "✅ Вы успешно подписались на утренние отчеты в 09:00 МСК и алеты при изменении курса >10%.", reply_markup=get_main_keyboard())
+
+@bot.message_handler(commands=["unsubscribe"])
+def unsubscribe_cmd(message):
+    """Команда отписки от утренних отчетов и уведомлений."""
+    db.remove_subscriber(message.chat.id)
+    bot.send_message(message.chat.id, "❌ Вы отписались от рассылок и уведомлений. Вы можете продолжать запрашивать курсы вручную.", reply_markup=get_main_keyboard())
+
+@bot.message_handler(commands=["rates"])
+def send_all_rates(message):
+    """Команда получения сводки по всем валютам."""
+    bot.send_chat_action(message.chat.id, "typing")
+    rates = rates_service.get_all_rates()
+    if not rates:
+        bot.send_message(message.chat.id, "❌ Не удалось получить актуальные курсы валют. Попробуйте позже.")
+        return
+
+    text = bot_scheduler.format_rates_message(rates, "📊 Актуальные курсы валют")
+    bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=get_main_keyboard())
+
+@bot.message_handler(commands=["status"])
+def send_status(message):
+    """Команда получения статуса подписки и текущих утренних курсов."""
+    subscribers = db.get_subscribers()
+    is_subbed = message.chat.id in subscribers
+    sub_status = "✅ Подписан" if is_subbed else "❌ Не подписан (/subscribe)"
+    
+    date_str, baseline = db.get_latest_baseline_rates()
+    
+    status_text = (
+        f"ℹ️ <b>Статус бота</b>\n\n"
+        f"• Ваша подписка: {sub_status}\n"
+        f"• Идентификатор чата: <code>{message.chat.id}</code>\n"
+        f"• Всего подписчиков: <b>{len(subscribers)}</b>\n"
+    )
+    
+    if date_str and baseline:
+        status_text += f"\n📌 <b>Утренние базовые курсы ({date_str}):</b>\n"
+        for code, r in baseline.items():
+            status_text += f"• {code}: <code>{r:,.4f}</code> RUB\n"
+    else:
+        status_text += "\n📌 Утренние базовые курсы пока не зафиксированы."
+
+    bot.send_message(message.chat.id, status_text, parse_mode="HTML", reply_markup=get_main_keyboard())
+
 @bot.message_handler(content_types=["text"])
 def handle_text(message):
-    if message.text.title() not in ["Usd", "Eur", "Cad", "Gbp"]:
-        bot.send_message(message.chat.id, 'Некорректный ввод: напишите "Usd", "Eur","Cad", "Gbp"')
+    """Обработчик текстовых сообщений от пользователя (выбор кнопок или ввод названия валюты)."""
+    txt = message.text.strip().lower()
+    
+    # Обработка кнопки "Все курсы"
+    if "все курсы" in txt or txt == "все" or txt == "rates":
+        send_all_rates(message)
+        return
 
+    # Обработка кнопки "Статус"
+    if "статус" in txt or txt == "status":
+        send_status(message)
+        return
 
-    elif message.text.title() == "Usd":
-        url = f"https://api.apilayer.com/exchangerates_data/latest?base={message.text.title()}"
-        response = requests.get(url, headers={'apikey': API_KEY})
-        #Загоняем из json, иначе не понимает
-        data = response.json()
-        # Вынимаем данные
-        rate = data["rates"]["RUB"]
-        bot.send_message(message.chat.id, f'Курс USD к рублю: {rate}')
-        #Задержка от особо умных
-        time.sleep(30)
-    elif message.text.title() == "Eur":
-        url = f"https://api.apilayer.com/exchangerates_data/latest?base={message.text}"
-        response = requests.get(url, headers={'apikey': API_KEY})
-        data = response.json()
-        rate = data["rates"]["RUB"]
-        bot.send_message(message.chat.id, f'Курс EUR к рублю: {rate}')
-        time.sleep(30)
-    elif message.text.title() == "Cad":
-        url = f"https://api.apilayer.com/exchangerates_data/latest?base={message.text}"
-        response = requests.get(url, headers={'apikey': API_KEY})
-        data = response.json()
-        rate = data["rates"]["RUB"]
-        bot.send_message(message.chat.id, f'Курс CAD к рублю: {rate}')
-        time.sleep(30)
+    # Словарь алиасов валют на русском и английском
+    currency_map = {
+        "usd": ["usd", "💵 usd", "доллар", "доллара", "бакс"],
+        "eur": ["eur", "💶 eur", "евро"],
+        "cad": ["cad", "🇨🇦 cad", "канадский доллар", "канадский"],
+        "gbp": ["gbp", "💷 gbp", "фунт", "фунта", "стерлинг"],
+        "kas": ["kas", "⚡ kas", "kaspa", "каспа"],
+        "xmr": ["xmr", "🔒 xmr", "monero", "монеро"]
+    }
 
-    elif message.text.title() == "Gbp":
-        url = f"https://api.apilayer.com/exchangerates_data/latest?base={message.text}"
-        response = requests.get(url, headers={'apikey': API_KEY})
-        data = response.json()
-        rate = data["rates"]["RUB"]
-        bot.send_message(message.chat.id, f'Курс GBP к рублю: {rate}')
-        time.sleep(30)
+    selected_symbol = None
+    for symbol, aliases in currency_map.items():
+        if any(alias == txt or alias in txt.split() for alias in aliases):
+            selected_symbol = symbol.upper()
+            break
 
+    if not selected_symbol:
+        bot.send_message(
+            message.chat.id,
+            'Некорректный ввод. Выберите валюту из меню ниже или напишите: USD, EUR, CAD, GBP, Kaspa (KAS), Monero (XMR).',
+            reply_markup=get_main_keyboard()
+        )
+        return
 
-# Запускаем бота
-bot.polling(none_stop=True, interval=0)
+    bot.send_chat_action(message.chat.id, "typing")
+    rate = rates_service.get_rate(selected_symbol)
+    
+    if rate is None:
+        bot.send_message(message.chat.id, f"❌ Не удалось получить курс для {selected_symbol}.")
+        return
+
+    name = rates_service.supported_currencies.get(selected_symbol, selected_symbol)
+    response_msg = f"Курс <b>{selected_symbol}</b> ({name}) к рублю: <code>{rate:,.4f}</code> RUB"
+    
+    # Сравнение с утренним базовым курсом при его наличии
+    date_str, baseline = db.get_latest_baseline_rates()
+    base_rate = baseline.get(selected_symbol) if baseline else None
+    if base_rate and base_rate > 0:
+        diff_pct = ((rate - base_rate) / base_rate) * 100.0
+        response_msg += f"\n<i>(Утренний курс: {base_rate:,.4f} RUB, изменение: {diff_pct:+.2f}%)</i>"
+
+    bot.send_message(message.chat.id, response_msg, parse_mode="HTML", reply_markup=get_main_keyboard())
+
+if __name__ == "__main__":
+    logger.info("Запуск Telegram-бота курсов валют...")
+    
+    # Передаем экземпляр бота в планировщик и запускаем его
+    bot_scheduler.set_bot(bot)
+    bot_scheduler.start()
+    
+    # Первоначальная проверка при запуске
+    try:
+        bot_scheduler.run_hourly_check()
+    except Exception as e:
+        logger.error(f"Первоначальная проверка при запуске завершилась с ошибкой: {e}")
+
+    logger.info("Бот успешно запущен и готовит ответы на сообщения...")
+    
+    # Бесконечный цикл обработки сообщений с авто-перезапуском при сбоях сети
+    bot.infinity_polling(timeout=20, long_polling_timeout=10)
