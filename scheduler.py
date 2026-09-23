@@ -23,26 +23,25 @@ class BotScheduler:
         self.bot = bot
 
     def format_rates_message(self, rates: dict[str, float], title: str) -> str:
-        """Форматирование списка курсов валют в HTML-сообщение Telegram."""
+        """Форматирование списка курсов валют (фиат к RUB, крипта к USD) в HTML-сообщение Telegram."""
         msg = f"<b>{title}</b>\n\n"
         
-        # Группировка: Фиатные и Криптовалюты
         fiat_codes = ["USD", "EUR", "BYN", "CAD", "GBP"]
         crypto_codes = ["BTC", "ETH", "SOL", "KAS", "XMR"]
         
-        msg += "<b>💵 Фиатные валюты:</b>\n"
+        msg += "<b>💵 Фиатные валюты (к рублю RUB):</b>\n"
         for code in fiat_codes:
             if code in rates:
                 name = rates_service.supported_currencies.get(code, code)
                 msg += f"• <b>{code}</b> ({name}): <code>{rates[code]:,.4f}</code> RUB\n"
                 
-        msg += "\n<b>🪙 Криптовалюты:</b>\n"
+        msg += "\n<b>🪙 Криптовалюты (к доллару USD):</b>\n"
         for code in crypto_codes:
             if code in rates:
                 name = rates_service.supported_currencies.get(code, code)
                 val = rates[code]
-                fmt = f"{val:,.4f}" if code == "KAS" else f"{val:,.2f}"
-                msg += f"• <b>{code}</b> ({name}): <code>{fmt}</code> RUB\n"
+                fmt = f"${val:,.4f}" if code == "KAS" else f"${val:,.2f}"
+                msg += f"• <b>{code}</b> ({name}): <code>{fmt}</code> USD\n"
                 
         return msg
 
@@ -54,13 +53,13 @@ class BotScheduler:
             
         subscribers = db.get_subscribers()
         if not subscribers:
-            logger.warning("Подписчики для рассылки не найдены! Убедитесь, что вы нажали /start в боте.")
+            logger.warning("Подписчики для рассылки не найдены! Нажмите /start в боте.")
             return
 
         for chat_id in subscribers:
             try:
                 self.bot.send_message(chat_id, text, parse_mode="HTML")
-                logger.info(f"Успешно отправлено рассылочное сообщение пользователю chat_id={chat_id}")
+                logger.info(f"Успешно отправлена рассылка chat_id={chat_id}")
             except Exception as e:
                 logger.error(f"Не удалось отправить рассылку пользователю {chat_id}: {e}")
 
@@ -75,11 +74,11 @@ class BotScheduler:
             logger.error("Не удалось получить курсы для утренней фиксации.")
             return
 
-        # Сохраняем базовые курсы в базу данных
+        # Сохраняем базовые курсы в базу данных (фиат в RUB, крипта в USD)
         db.save_baseline_rates(date_str, rates)
 
         # Формируем и рассылаем утренний отчет
-        title = f"🌅 Утренний курс валют на {now.strftime('%d.%m.%Y')} (09:00 МСК)"
+        title = f"🌅 Утренний курс на {now.strftime('%d.%m.%Y')} (09:00 МСК)"
         msg = self.format_rates_message(rates, title)
         msg += "\n<i>Курсы зафиксированы как базовые для отслеживания отклонений.</i>"
 
@@ -127,14 +126,18 @@ class BotScheduler:
                     direction = "📈 Рост" if diff_pct > 0 else "📉 Падение"
                     name = rates_service.supported_currencies.get(code, code)
                     
-                    fmt_base = f"{base_rate:,.4f}" if code == "KAS" else f"{base_rate:,.2f}"
-                    fmt_curr = f"{current_rate:,.4f}" if code == "KAS" else f"{current_rate:,.2f}"
+                    is_crypto = rates_service.is_crypto(code)
+                    currency_symbol = "USD" if is_crypto else "RUB"
+                    prefix = "$" if is_crypto else ""
+
+                    fmt_base = f"{prefix}{base_rate:,.4f}" if code == "KAS" else f"{prefix}{base_rate:,.2f}"
+                    fmt_curr = f"{prefix}{current_rate:,.4f}" if code == "KAS" else f"{prefix}{current_rate:,.2f}"
 
                     alert_msg = (
                         f"🚨 <b>ВНИМАНИЕ! Сильное отклонение курса!</b>\n\n"
                         f"Валюта: <b>{code}</b> ({name})\n"
-                        f"Утренний курс (09:00): <code>{fmt_base}</code> RUB\n"
-                        f"Текущий курс: <code>{fmt_curr}</code> RUB\n"
+                        f"Утренний курс (09:00): <code>{fmt_base}</code> {currency_symbol}\n"
+                        f"Текущий курс: <code>{fmt_curr}</code> {currency_symbol}\n"
                         f"Отклонение: <b>{diff_pct:+.2f}%</b> ({direction})\n\n"
                         f"<i>Порог срабатывания: {Config.DEVIATION_THRESHOLD_PERCENT}%</i>"
                     )
@@ -149,7 +152,7 @@ class BotScheduler:
             CronTrigger(hour=9, minute=0, timezone=self.timezone),
             id="daily_baseline",
             replace_existing=True,
-            misfire_grace_time=3600  # Допустимое опоздание 1 час (при перезапуске сервера около 9 утра)
+            misfire_grace_time=3600
         )
 
         # 2. Ежечасовая проверка отклонений в :00 минут

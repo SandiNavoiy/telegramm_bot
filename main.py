@@ -62,8 +62,8 @@ def send_welcome(message):
         f"👋 <b>Привет, {message.from_user.first_name or 'пользователь'}!</b>\n\n"
         f"Я бот отслеживания курсов валют и криптовалют.\n\n"
         f"<b>Поддерживаемые активы:</b>\n"
-        f"• <b>Фиат</b>: USD, EUR, BYN (Белорусский рубль), CAD, GBP.\n"
-        f"• <b>Крипта</b>: BTC (Биткоин), ETH (Эфириум), SOL (Солана), KAS (Kaspa), XMR (Monero).\n\n"
+        f"• <b>Фиат (к RUB)</b>: USD, EUR, BYN, CAD, GBP.\n"
+        f"• <b>Крипта (к USD)</b>: BTC, ETH, SOL, KAS, XMR.\n\n"
         f"<b>Что я умею:</b>\n"
         f"• Ежедневно в <b>09:00 по Москве</b> автоматически отправлять утренний сводный курс.\n"
         f"• Запоминать утренний курс и каждый час проверять отклонения.\n"
@@ -122,8 +122,11 @@ def send_status(message):
     if date_str and baseline:
         status_text += f"\n📌 <b>Утренние базовые курсы ({date_str}):</b>\n"
         for code, r in baseline.items():
-            fmt = f"{r:,.4f}" if code == "KAS" else f"{r:,.2f}"
-            status_text += f"• {code}: <code>{fmt}</code> RUB\n"
+            is_crypto = rates_service.is_crypto(code)
+            unit = "USD" if is_crypto else "RUB"
+            prefix = "$" if is_crypto else ""
+            fmt = f"{prefix}{r:,.4f}" if code == "KAS" else f"{prefix}{r:,.2f}"
+            status_text += f"• {code}: <code>{fmt}</code> {unit}\n"
     else:
         status_text += "\n📌 Утренние базовые курсы пока не зафиксированы."
 
@@ -180,21 +183,26 @@ def handle_text(message):
         return
 
     name = rates_service.supported_currencies.get(selected_symbol, selected_symbol)
-    fmt_rate = f"{rate:,.4f}" if selected_symbol == "KAS" else f"{rate:,.2f}"
-    response_msg = f"Курс <b>{selected_symbol}</b> ({name}) к рублю: <code>{fmt_rate}</code> RUB"
+    is_crypto = rates_service.is_crypto(selected_symbol)
+    unit = "USD" if is_crypto else "RUB"
+    target_name = "доллару США ($)" if is_crypto else "рублю"
+    prefix = "$" if is_crypto else ""
+    
+    fmt_rate = f"{prefix}{rate:,.4f}" if selected_symbol == "KAS" else f"{prefix}{rate:,.2f}"
+    response_msg = f"Курс <b>{selected_symbol}</b> ({name}) к {target_name}: <code>{fmt_rate}</code> {unit}"
     
     # Сравнение с утренним базовым курсом при его наличии
     date_str, baseline = db.get_latest_baseline_rates()
     base_rate = baseline.get(selected_symbol) if baseline else None
     if base_rate and base_rate > 0:
         diff_pct = ((rate - base_rate) / base_rate) * 100.0
-        fmt_base = f"{base_rate:,.4f}" if selected_symbol == "KAS" else f"{base_rate:,.2f}"
-        response_msg += f"\n<i>(Утренний курс: {fmt_base} RUB, изменение: {diff_pct:+.2f}%)</i>"
+        fmt_base = f"{prefix}{base_rate:,.4f}" if selected_symbol == "KAS" else f"{prefix}{base_rate:,.2f}"
+        response_msg += f"\n<i>(Утренний курс: {fmt_base} {unit}, изменение: {diff_pct:+.2f}%)</i>"
 
     bot.send_message(message.chat.id, response_msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
 if __name__ == "__main__":
-    logger.info("Запуск Telegram-бота курсов валют и криптовалют...")
+    logger.info("Запуск Telegram-бота курсов валют (к RUB) и криптовалют (к USD)...")
     
     # Передаем экземпляр бота в планировщик и запускаем его
     bot_scheduler.set_bot(bot)

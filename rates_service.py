@@ -5,25 +5,33 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 class RatesService:
-    """Сервис получения котировок фиатных валют и криптовалют к рублю."""
+    """Сервис получения котировок фиатных валют (к рублю) и криптовалют (к доллару США)."""
 
     def __init__(self):
         # Поддерживаемые валюты и их человекочитаемые названия
         self.supported_currencies = {
+            # Фиатные валюты (к RUB)
             "USD": "Доллар США",
             "EUR": "Евро",
             "BYN": "Белорусский рубль",
             "CAD": "Канадский доллар",
             "GBP": "Фунт стерлингов",
+            # Криптовалюты (к USD)
             "BTC": "Bitcoin (Биткоин)",
             "ETH": "Ethereum (Эфириум)",
             "SOL": "Solana (Солана)",
             "KAS": "Kaspa (Каспа)",
             "XMR": "Monero (Монеро)"
         }
+        
+        self.crypto_symbols = {"BTC", "ETH", "SOL", "KAS", "XMR"}
+        self.fiat_symbols = {"USD", "EUR", "BYN", "CAD", "GBP"}
+
+    def is_crypto(self, symbol: str) -> bool:
+        return symbol.upper() in self.crypto_symbols
 
     def fetch_cbr_fiat_rates(self) -> dict[str, float]:
-        """Получение курсов фиатных валют (USD, EUR, BYN, CAD, GBP) из API ЦБ РФ."""
+        """Получение курсов фиатных валют (USD, EUR, BYN, CAD, GBP) в RUB из API ЦБ РФ."""
         url = "https://www.cbr-xml-daily.ru/daily_json.js"
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -54,8 +62,8 @@ class RatesService:
                 rates[symbol] = round(float(data["rates"]["RUB"]), 4)
         return rates
 
-    def fetch_crypto_rates(self, usd_in_rub: float = None) -> dict[str, float]:
-        """Получение курсов криптовалют (BTC, ETH, SOL, KAS, XMR) к рублю."""
+    def fetch_crypto_rates_usd(self) -> dict[str, float]:
+        """Получение курсов криптовалют (BTC, ETH, SOL, KAS, XMR) к доллару США (USD)."""
         crypto_rates = {}
         crypto_ids = {
             "bitcoin": "BTC",
@@ -65,51 +73,47 @@ class RatesService:
             "monero": "XMR"
         }
         
-        # 1. Основной источник: CoinGecko API
+        # 1. Основной источник: CoinGecko API (vs_currencies=usd)
         try:
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(crypto_ids.keys())}&vs_currencies=rub,usd"
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(crypto_ids.keys())}&vs_currencies=usd"
             headers = {"User-Agent": "TelegramBot/1.0"}
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 for cg_id, symbol in crypto_ids.items():
-                    if cg_id in data:
-                        price_rub = data[cg_id].get("rub")
-                        if not price_rub and "usd" in data[cg_id] and usd_in_rub:
-                            price_rub = data[cg_id]["usd"] * usd_in_rub
-                        if price_rub:
-                            # Округление: для BTC/ETH/SOL/XMR до целых/сотых, для KAS до 4 знаков
-                            decimals = 4 if symbol == "KAS" else (2 if price_rub < 1000 else 2)
-                            crypto_rates[symbol] = round(float(price_rub), decimals)
+                    if cg_id in data and "usd" in data[cg_id]:
+                        price_usd = float(data[cg_id]["usd"])
+                        # Округление: KAS до 4 знаков, остальные до 2 знаков
+                        decimals = 4 if symbol == "KAS" else 2
+                        crypto_rates[symbol] = round(price_usd, decimals)
 
                 if len(crypto_rates) == len(crypto_ids):
                     return crypto_rates
         except Exception as e:
             logger.warning(f"Ошибка запроса к CoinGecko: {e}. Переход на резервный источник CryptoCompare...")
 
-        # 2. Резервный источник: CryptoCompare API
+        # 2. Резервный источник: CryptoCompare API (tsyms=USD)
         try:
             fsyms = ",".join(crypto_ids.values())
-            url = f"https://min-api.cryptocompare.com/data/pricemulti?fsyms={fsyms}&tsyms=RUB,USD"
+            url = f"https://min-api.cryptocompare.com/data/pricemulti?fsyms={fsyms}&tsyms=USD"
             res = requests.get(url, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 for symbol in crypto_ids.values():
-                    if symbol in data:
-                        price_rub = data[symbol].get("RUB") or (data[symbol].get("USD", 0) * (usd_in_rub or 90.0))
-                        if price_rub:
-                            decimals = 4 if symbol == "KAS" else 2
-                            crypto_rates[symbol] = round(float(price_rub), decimals)
+                    if symbol in data and "USD" in data[symbol]:
+                        price_usd = float(data[symbol]["USD"])
+                        decimals = 4 if symbol == "KAS" else 2
+                        crypto_rates[symbol] = round(price_usd, decimals)
         except Exception as e:
             logger.error(f"Ошибка запроса к CryptoCompare: {e}")
 
         return crypto_rates
 
     def get_all_rates(self) -> dict[str, float]:
-        """Получить актуальные курсы всех поддерживаемых фиатных и криптовалютных активов."""
+        """Получить актуальные курсы всех фиатных валют (к RUB) и криптовалют (к USD)."""
         rates = {}
         
-        # 1. Загрузка фиатных валют
+        # 1. Фиатные валюты (к RUB)
         fiat_fetched = False
         if Config.API_KEY:
             try:
@@ -124,13 +128,12 @@ class RatesService:
             except Exception as e:
                 logger.error(f"Ошибка получения курсов ЦБ РФ: {e}")
 
-        # 2. Загрузка криптовалют
-        usd_rub = rates.get("USD")
+        # 2. Криптовалюты (к USD)
         try:
-            crypto_rates = self.fetch_crypto_rates(usd_in_rub=usd_rub)
+            crypto_rates = self.fetch_crypto_rates_usd()
             rates.update(crypto_rates)
         except Exception as e:
-            logger.error(f"Ошибка получения криптовалютных курсов: {e}")
+            logger.error(f"Ошибка получения криптовалютных курсов в USD: {e}")
 
         return rates
 
