@@ -25,9 +25,25 @@ class BotScheduler:
     def format_rates_message(self, rates: dict[str, float], title: str) -> str:
         """Форматирование списка курсов валют в HTML-сообщение Telegram."""
         msg = f"<b>{title}</b>\n\n"
-        for code, rate in rates.items():
-            name = rates_service.supported_currencies.get(code, code)
-            msg += f"• <b>{code}</b> ({name}): <code>{rate:,.4f}</code> RUB\n"
+        
+        # Группировка: Фиатные и Криптовалюты
+        fiat_codes = ["USD", "EUR", "BYN", "CAD", "GBP"]
+        crypto_codes = ["BTC", "ETH", "SOL", "KAS", "XMR"]
+        
+        msg += "<b>💵 Фиатные валюты:</b>\n"
+        for code in fiat_codes:
+            if code in rates:
+                name = rates_service.supported_currencies.get(code, code)
+                msg += f"• <b>{code}</b> ({name}): <code>{rates[code]:,.4f}</code> RUB\n"
+                
+        msg += "\n<b>🪙 Криптовалюты:</b>\n"
+        for code in crypto_codes:
+            if code in rates:
+                name = rates_service.supported_currencies.get(code, code)
+                val = rates[code]
+                fmt = f"{val:,.4f}" if code == "KAS" else f"{val:,.2f}"
+                msg += f"• <b>{code}</b> ({name}): <code>{fmt}</code> RUB\n"
+                
         return msg
 
     def send_broadcast(self, text: str):
@@ -38,17 +54,18 @@ class BotScheduler:
             
         subscribers = db.get_subscribers()
         if not subscribers:
-            logger.info("Подписчики для рассылки не найдены.")
+            logger.warning("Подписчики для рассылки не найдены! Убедитесь, что вы нажали /start в боте.")
             return
 
         for chat_id in subscribers:
             try:
                 self.bot.send_message(chat_id, text, parse_mode="HTML")
+                logger.info(f"Успешно отправлено рассылочное сообщение пользователю chat_id={chat_id}")
             except Exception as e:
                 logger.error(f"Не удалось отправить рассылку пользователю {chat_id}: {e}")
 
     def run_daily_baseline(self):
-        """Ежедневная задача в 09:00 МСК: сохранение базовых утренних курсов и рассылка отчета."""
+        """Ежедневная задача в 09:00 МСК: фиксация базовых утренних курсов и отправка отчета."""
         now = datetime.now(self.timezone)
         date_str = now.strftime("%Y-%m-%d")
         logger.info(f"Запуск утренней фиксации курсов за {date_str} в 09:00 МСК...")
@@ -58,10 +75,10 @@ class BotScheduler:
             logger.error("Не удалось получить курсы для утренней фиксации.")
             return
 
-        # Сохраняем базовые курсы в БД
+        # Сохраняем базовые курсы в базу данных
         db.save_baseline_rates(date_str, rates)
 
-        # Формируем и отправляем утренний отчет
+        # Формируем и рассылаем утренний отчет
         title = f"🌅 Утренний курс валют на {now.strftime('%d.%m.%Y')} (09:00 МСК)"
         msg = self.format_rates_message(rates, title)
         msg += "\n<i>Курсы зафиксированы как базовые для отслеживания отклонений.</i>"
@@ -69,7 +86,7 @@ class BotScheduler:
         self.send_broadcast(msg)
 
     def run_hourly_check(self):
-        """Ежечасовая задача: проверка отклонений текущих курсов от утренних базовых (порог > 10%)."""
+        """Ежечасовая задача: проверка отклонений текущих курсов от утренних базовых (>10%)."""
         now = datetime.now(self.timezone)
         date_str = now.strftime("%Y-%m-%d")
         logger.info(f"Запуск часовой проверки отклонений курсов за {date_str}...")
@@ -77,7 +94,7 @@ class BotScheduler:
         # Получаем утренние базовые курсы за сегодня
         baseline_rates = db.get_baseline_rates(date_str)
 
-        # Если бот запустился после 09:00 МСК и база за сегодня пуста, фиксируем текущие курсы
+        # Если база за сегодня пуста, фиксируем текущие курсы в качестве базовых
         if not baseline_rates:
             logger.info("Утренние базовые курсы за сегодня отсутствуют. Фиксируем текущие курсы...")
             current_rates = rates_service.get_all_rates()
@@ -95,28 +112,29 @@ class BotScheduler:
             logger.error("Не удалось получить текущие курсы для часовой проверки.")
             return
 
-        # Сравниваем каждую валюту
+        # Сравниваем каждый актив
         for code, current_rate in current_rates.items():
             base_rate = baseline_rates.get(code)
             if not base_rate or base_rate <= 0:
                 continue
 
-            # Расчет процента изменения
             diff_pct = ((current_rate - base_rate) / base_rate) * 100.0
 
-            # Если отклонение больше или равно заданному порогу (10%)
+            # При отклонении >= 10%
             if abs(diff_pct) >= Config.DEVIATION_THRESHOLD_PERCENT:
-                # Проверяем, не отправлялось ли уже уведомление по этой валюте сегодня
                 if not db.has_alerted_today(date_str, code):
                     db.record_alert(date_str, code, current_rate, base_rate, diff_pct)
                     direction = "📈 Рост" if diff_pct > 0 else "📉 Падение"
                     name = rates_service.supported_currencies.get(code, code)
                     
+                    fmt_base = f"{base_rate:,.4f}" if code == "KAS" else f"{base_rate:,.2f}"
+                    fmt_curr = f"{current_rate:,.4f}" if code == "KAS" else f"{current_rate:,.2f}"
+
                     alert_msg = (
                         f"🚨 <b>ВНИМАНИЕ! Сильное отклонение курса!</b>\n\n"
                         f"Валюта: <b>{code}</b> ({name})\n"
-                        f"Утренний курс (09:00): <code>{base_rate:,.4f}</code> RUB\n"
-                        f"Текущий курс: <code>{current_rate:,.4f}</code> RUB\n"
+                        f"Утренний курс (09:00): <code>{fmt_base}</code> RUB\n"
+                        f"Текущий курс: <code>{fmt_curr}</code> RUB\n"
                         f"Отклонение: <b>{diff_pct:+.2f}%</b> ({direction})\n\n"
                         f"<i>Порог срабатывания: {Config.DEVIATION_THRESHOLD_PERCENT}%</i>"
                     )
@@ -125,24 +143,26 @@ class BotScheduler:
 
     def start(self):
         """Запуск фонового планировщика задач."""
-        # 1. Задача в 09:00 МСК каждый день
+        # 1. Задача рассылки и фиксации базового курса в 09:00 МСК
         self.scheduler.add_job(
             self.run_daily_baseline,
             CronTrigger(hour=9, minute=0, timezone=self.timezone),
             id="daily_baseline",
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=3600  # Допустимое опоздание 1 час (при перезапуске сервера около 9 утра)
         )
 
-        # 2. Задача каждый час в 00 минут
+        # 2. Ежечасовая проверка отклонений в :00 минут
         self.scheduler.add_job(
             self.run_hourly_check,
             CronTrigger(minute=0, timezone=self.timezone),
             id="hourly_check",
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=1800
         )
 
         self.scheduler.start()
-        logger.info("Планировщик задач успешно запущен (часовой пояс: МСК).")
+        logger.info("Планировщик задач успешно запущен в часовом поясе МСК.")
 
 # Глобальный экземпляр планировщика
 bot_scheduler = BotScheduler()

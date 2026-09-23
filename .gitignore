@@ -55,7 +55,10 @@ cover/
 *.mo
 *.pot
 
-# Django stuff:
+# Database files
+bot_data.db
+bot_data.db-journal
+*.db
 *.log
 local_settings.py
 db.sqlite3
